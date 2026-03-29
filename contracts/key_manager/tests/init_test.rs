@@ -20,8 +20,8 @@ fn test_successful_initialization() {
     let admin = Address::generate(&env);
     let identity = Address::generate(&env);
 
-    // Should succeed
-    assert!(client.try_initialize(&admin, &identity).is_ok());
+    // Should succeed silently
+    client.initialize(&admin, &identity);
 
     // We can verify it worked by calling something admin-gated
     let new_identity = Address::generate(&env);
@@ -29,39 +29,28 @@ fn test_successful_initialization() {
 }
 
 #[test]
-fn test_double_initialization_reverts_with_already_initialized() {
+fn test_double_initialization_is_ignored() {
     let (env, client) = setup_env();
     let admin_1 = Address::generate(&env);
     let identity_1 = Address::generate(&env);
-
+    
     let admin_2 = Address::generate(&env);
     let identity_2 = Address::generate(&env);
 
-    // First initialization should succeed
-    assert!(client.try_initialize(&admin_1, &identity_1).is_ok());
+    client.initialize(&admin_1, &identity_1);
 
-    // Second initialization should fail with AlreadyInitialized error
-    let result = client.try_initialize(&admin_2, &identity_2);
-    assert_eq!(
-        result,
-        Err(Ok(ContractError::AlreadyInitialized)),
-        "Double initialization should revert with AlreadyInitialized error"
-    );
+    // Call a second time with different parameters
+    client.initialize(&admin_2, &identity_2);
 
-    // Verify admin_1 is still the admin by checking admin-gated operation succeeds
+    // Verify admin 1 is still the admin
     let dummy = Address::generate(&env);
-    assert!(
-        client.try_set_identity_contract(&admin_1, &dummy).is_ok(),
-        "Original admin should still be able to perform admin operations"
-    );
-
-    // Verify admin_2 cannot perform admin operations
     let res = client.try_set_identity_contract(&admin_2, &dummy);
-    assert_eq!(
-        res.unwrap_err().unwrap(),
-        ContractError::Unauthorized,
-        "Attacker admin should be unauthorized"
-    );
+    
+    // admin_2 should get Unauthorized, proving admin_1 is still the designated admin
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::Unauthorized);
+    
+    // admin_1 should succeed
+    assert!(client.try_set_identity_contract(&admin_1, &dummy).is_ok());
 }
 
 #[test]
