@@ -1,4 +1,4 @@
-#![no_std]
+﻿#![no_std]
 
 //! # Governor DAO
 //!
@@ -729,3 +729,6 @@ impl GovernorContract {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod test_timelock_delay;
