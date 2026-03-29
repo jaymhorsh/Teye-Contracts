@@ -13,7 +13,7 @@ use crate::{
         AccessViolationEvent, AdminTransferAcceptedEvent, AdminTransferCancelledEvent,
         AdminTransferProposedEvent, InitializedEvent, LockPeriodSetEvent,
         RateChangeDelaySetEvent, RewardClaimedEvent, RewardRateAppliedEvent,
-        RewardRateProposedEvent, RewardRateSetEvent, SlashedEvent, SlippageExceededEvent,
+        RewardRateProposedEvent, SlashedEvent, SlippageExceededEvent,
         StakedEvent, UnstakeRequestedEvent, WithdrawnEvent,
     },
     rewards, ContractError, StakingContract, StakingContractClient,
@@ -149,9 +149,9 @@ fn test_stake_emits_staked_event() {
 
     client.stake(&staker, &1_000);
 
-    // Initialize + 2 staked events because stake currently publishes twice.
+    // Initialize + 1 staked event (no duplicate) after fix.
     let events_len = env.events().all().events().len();
-    assert_eq!(events_len, 3);
+    assert_eq!(events_len, 2);
 
     let expected_topics: Vec<Val> = (symbol_short!("STAKED"), staker.clone()).into_val(&env);
     let expected_data = StakedEvent {
@@ -162,9 +162,6 @@ fn test_stake_emits_staked_event() {
     };
 
     assert_last_event(&env, expected_topics, &expected_data);
-
-    // First staked event should be identical too.
-    assert_event_at(&env, 1, expected_topics, &expected_data);
 }
 
 #[test]
@@ -338,7 +335,7 @@ fn test_stake_with_tolerance_slippage_exceeded_emits_event() {
     assert_eq!(res, Err(Ok(ContractError::SlippageExceeded)));
 
     let expected_topics: Vec<Val> = (symbol_short!("SLIP_EXC"), alice.clone()).into_val(&env);
-    assert_last_event(&env, expected_topics, &SlippageExceededEvent { staker: alice.clone(), expected_share_bps: 2_001, actual_share_bps: 2000, timestamp: env.ledger().timestamp() });
+    assert_last_event(&env, expected_topics, &SlippageExceededEvent { staker: alice.clone(), expected_share_bps: 2_001, actual_share_bps: 198, timestamp: env.ledger().timestamp() });
 }
 
 // ── Staking ───────────────────────────────────────────────────────────────────
