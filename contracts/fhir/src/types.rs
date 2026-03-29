@@ -54,4 +54,16 @@ pub enum FhirError {
     ExternalCallFailed = 3,
     InvalidRecordData = 4,
     RecordAlreadyExists = 5,
+    Unauthorized = 6,
+    InvalidPayload = 7,
+    MigrationFailed = 8,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Resource {
+    pub id: String,
+    pub payload: Bytes,
+    pub version: u32,
+    pub last_updated: u64,
 }

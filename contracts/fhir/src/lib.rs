@@ -1,92 +1,147 @@
 #![no_std]
 
-#[cfg(test)]
-mod test;
-pub mod types;
-
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, symbol_short, Address, Bytes, Env, String, Symbol,
+    contract, contractimpl, panic_with_error, symbol_short, Address, Bytes, Env, IntoVal, Map,
+    String, Symbol, Vec,
 };
+
+pub mod types;
 pub use types::FhirError;
 use types::{Gender, Observation, ObservationStatus, Patient};
 
+use common::migration::{
+    self, FieldTransform, Migration, SchemaVersion, CURRENT_VERSION,
+};
+
+// Storage keys
 const INITIALIZED: Symbol = symbol_short!("INIT");
 const ADMIN: Symbol = symbol_short!("ADMIN");
-const REGISTRY: Symbol = symbol_short!("REG");
-const REG_MODE: Symbol = symbol_short!("MODE");
+const RESOURCES: Symbol = symbol_short!("RES");
+const VERSIONS: Symbol = symbol_short!("VER");
 
 #[contract]
 pub struct FhirContract;
 
 #[contractimpl]
 impl FhirContract {
-    /// Initializes the contract.
-    pub fn initialize(env: Env, admin: Address, registry: Address) {
+    /// Initializes the contract with an admin address.
+    pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&INITIALIZED) {
             panic_with_error!(env, FhirError::AlreadyInitialized);
         }
         env.storage().instance().set(&INITIALIZED, &true);
         env.storage().instance().set(&ADMIN, &admin);
-        env.storage().instance().set(&REGISTRY, &registry);
-        env.storage().instance().set(&REG_MODE, &0u32); // Normal
+        
+        // Setup FHIR specific migrations
+        setup_fhir_migrations(&env);
     }
 
-    /// Placeholder for testing failing registry
-    pub fn initialize_with_failing_registry(
-        env: Env,
-        admin: Address,
-        registry: Address,
-    ) {
-        Self::initialize(env.clone(), admin, registry);
-        env.storage().instance().set(&REG_MODE, &1u32); // Failing
-    }
-
-    /// Placeholder for testing empty registry
-    pub fn initialize_with_empty_registry(
-        env: Env,
-        admin: Address,
-        registry: Address,
-    ) {
-        Self::initialize(env.clone(), admin, registry);
-        env.storage().instance().set(&REG_MODE, &2u32); // Empty
-    }
-
-    /// Fetch and store a record from the registry.
-    pub fn fetch_and_store_record(env: Env, record_id: u64) {
-        if !env.storage().instance().has(&REGISTRY) {
-             panic_with_error!(env, FhirError::RecordNotFound); // Reverts if not initialized
+    /// Registers a new FHIR resource.
+    pub fn register_resource(env: Env, admin: Address, id: String, payload: Bytes) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        if admin != stored_admin {
+            panic_with_error!(env, FhirError::Unauthorized);
         }
 
-        let mode: u32 = env.storage().instance().get(&REG_MODE).unwrap_or(0);
-
-        if mode == 1 { // Failing
-            panic_with_error!(env, FhirError::ExternalCallFailed);
+        if id.is_empty() || payload.is_empty() {
+             panic_with_error!(env, FhirError::InvalidPayload);
         }
 
-        if mode == 2 { // Empty
-            panic_with_error!(env, FhirError::InvalidRecordData);
+        let key = (RESOURCES, id.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(env, FhirError::RecordAlreadyExists);
         }
 
-        // Specific IDs for tests
-        if record_id == 99 {
-             panic_with_error!(env, FhirError::ExternalCallFailed);
-        }
+        let mut data = Map::new(&env);
+        data.set(symbol_short!("payload"), payload.into_val(&env));
+        data.set(symbol_short!("updated"), env.ledger().timestamp().into_val(&env));
 
-        let mut data_arr = [0u8; 1];
-        data_arr[0] = record_id as u8;
-        let data = Bytes::from_array(&env, &data_arr);
-        env.storage().persistent().set(&record_id, &data);
+        env.storage().persistent().set(&key, &data);
+        env.storage().persistent().set(&(VERSIONS, id), &1u32);
     }
 
-    /// Get a stored record.
-    pub fn get_record(env: Env, record_id: u64) -> Bytes {
-        env.storage()
-            .persistent()
-            .get(&record_id)
-            .unwrap_or_else(|| panic_with_error!(env, FhirError::RecordNotFound))
+    /// Get a stored resource, automatically applying lazy migrations.
+    pub fn get_resource(env: Env, id: String) -> Bytes {
+        let key = (RESOURCES, id.clone());
+        let mut data: Map<Symbol, Bytes> = env.storage().persistent().get(&key).unwrap_or_else(|| {
+            panic_with_error!(env, FhirError::RecordNotFound)
+        });
+
+        let version: u32 = env.storage().persistent().get(&(VERSIONS, id.clone())).unwrap_or(1);
+        
+        // Lazy migration (forward to CURRENT_VERSION defined in common if not specified otherwise)
+        let new_version = migration::lazy_read(&env, &mut data, version).unwrap_or_else(|_| {
+            panic_with_error!(env, FhirError::MigrationFailed)
+        });
+
+        if new_version != version {
+            env.storage().persistent().set(&key, &data);
+            env.storage().persistent().set(&(VERSIONS, id), &new_version);
+        }
+
+        data.get(symbol_short!("payload")).unwrap()
     }
 
-    /// Creates a FHIR Patient resource.
+    /// Manual migration for a specific resource.
+    pub fn migrate_resource(env: Env, admin: Address, id: String, target_version: u32) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        if admin != stored_admin {
+            panic_with_error!(env, FhirError::Unauthorized);
+        }
+
+        let key = (RESOURCES, id.clone());
+        let mut data: Map<Symbol, Bytes> = env.storage().persistent().get(&key).unwrap_or_else(|| {
+            panic_with_error!(env, FhirError::RecordNotFound)
+        });
+
+        let version: u32 = env.storage().persistent().get(&(VERSIONS, id.clone())).unwrap_or(1);
+        
+        let reached = migration::migrate_forward(&env, &mut data, version, target_version).unwrap_or_else(|_| {
+            panic_with_error!(env, FhirError::MigrationFailed)
+        });
+
+        env.storage().persistent().set(&key, &data);
+        env.storage().persistent().set(&(VERSIONS, id), &reached);
+    }
+
+    /// Update an existing FHIR resource.
+    pub fn update_resource(env: Env, admin: Address, id: String, payload: Bytes) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        if admin != stored_admin {
+            panic_with_error!(env, FhirError::Unauthorized);
+        }
+
+        let key = (RESOURCES, id.clone());
+        let mut data: Map<Symbol, Bytes> = env.storage().persistent().get(&key).unwrap_or_else(|| {
+            panic_with_error!(env, FhirError::RecordNotFound)
+        });
+
+        data.set(symbol_short!("payload"), payload);
+        data.set(symbol_short!("updated"), env.ledger().timestamp().into_val(&env));
+
+        env.storage().persistent().set(&key, &data);
+    }
+
+    /// Deletes a FHIR resource.
+    pub fn delete_resource(env: Env, admin: Address, id: String) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        if admin != stored_admin {
+            panic_with_error!(env, FhirError::Unauthorized);
+        }
+
+        let key = (RESOURCES, id.clone());
+        if !env.storage().persistent().has(&key) {
+            panic_with_error!(env, FhirError::RecordNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().remove(&(VERSIONS, id));
+    }
+
+    /// Creates a FHIR Patient resource (metadata only).
     pub fn create_patient(
         _env: Env,
         id: String,
@@ -107,13 +162,10 @@ impl FhirContract {
 
     /// Validates a FHIR Patient resource.
     pub fn validate_patient(_env: Env, patient: Patient) -> bool {
-        // Minimal validation logic: ID and name should not be empty.
-        // In a real scenario, this would check against specific FHIR profiles.
         !patient.id.is_empty() && !patient.name.is_empty()
     }
 
-    /// Creates a FHIR Observation resource.
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a FHIR Observation resource (metadata only).
     pub fn create_observation(
         _env: Env,
         id: String,
@@ -137,9 +189,33 @@ impl FhirContract {
 
     /// Validates a FHIR Observation resource.
     pub fn validate_observation(_env: Env, observation: Observation) -> bool {
-        // Minimal validation logic: must have an ID, code system, and subject
         !observation.id.is_empty()
             && !observation.code_system.is_empty()
             && !observation.subject_id.is_empty()
     }
 }
+
+fn setup_fhir_migrations(env: &Env) {
+    let m1 = Migration {
+        from_version: 1,
+        to_version: 2,
+        description: String::from_str(env, "Add meta field to resource"),
+        forward: {
+            let mut v = Vec::new(env);
+            v.push_back(FieldTransform::AddField(
+                symbol_short!("meta"),
+                Bytes::new(env),
+            ));
+            v
+        },
+        reverse: {
+            let mut v = Vec::new(env);
+            v.push_back(FieldTransform::RemoveField(symbol_short!("meta")));
+            v
+        },
+    };
+    let _ = migration::register_migration(env, m1);
+}
+
+#[cfg(test)]
+mod test;
