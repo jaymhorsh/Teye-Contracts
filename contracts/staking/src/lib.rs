@@ -6,6 +6,9 @@ pub mod events;
 pub mod rewards;
 pub mod timelock;
 
+#[cfg(test)]
+mod test_slash;
+
 extern crate alloc;
 use alloc::string::ToString;
 
@@ -899,6 +902,88 @@ impl StakingContract {
     /// Returns whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         common::pausable::is_paused(&env)
+    }
+
+    // ── Slashing ─────────────────────────────────────────────────────────────
+
+    /// Slash `amount` tokens from a validator's staked balance.
+    ///
+    /// Only the admin (or a `ContractAdmin`-tier caller) may slash.
+    /// Returns `SlashingUnauthorized` when called by any other address.
+    ///
+    /// If `amount` exceeds the validator's current staked balance the entire
+    /// balance is slashed (no partial-slash revert).  The slashed tokens are
+    /// retained by the contract and excluded from staking accounting.
+    ///
+    /// # Errors
+    /// * `NotInitialized`       – contract not yet bootstrapped.
+    /// * `SlashingUnauthorized` – caller is not an authorised admin.
+    /// * `InvalidInput`         – `amount` is zero or negative.
+    /// * `InsufficientBalance`  – validator has nothing staked.
+    pub fn slash(
+        env: Env,
+        caller: Address,
+        validator: Address,
+        amount: i128,
+    ) -> Result<i128, ContractError> {
+        Self::require_initialized(&env)?;
+        caller.require_auth();
+
+        // Only admin-tier callers may slash.
+        if Self::require_admin_tier(&env, &caller, &AdminTier::ContractAdmin, "slash").is_err() {
+            events::publish_access_violation(
+                &env,
+                caller.clone(),
+                String::from_str(&env, "slash"),
+                String::from_str(&env, "admin_tier:ContractAdmin"),
+            );
+            return Err(ContractError::SlashingUnauthorized);
+        }
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let user_stake_key = (USER_STAKE, validator.clone());
+        let current_stake: i128 = env
+            .storage()
+            .persistent()
+            .get(&user_stake_key)
+            .unwrap_or(0);
+
+        if current_stake <= 0 {
+            return Err(ContractError::InsufficientBalance);
+        }
+
+        // Cap the slash at the validator's entire balance.
+        let slash_amount = amount.min(current_stake);
+        let new_validator_stake = current_stake.saturating_sub(slash_amount);
+        env.storage()
+            .persistent()
+            .set(&user_stake_key, &new_validator_stake);
+
+        let prev_total: i128 = env.storage().instance().get(&TOTAL_STAKED).unwrap_or(0);
+        let new_total = prev_total.saturating_sub(slash_amount);
+        env.storage().instance().set(&TOTAL_STAKED, &new_total);
+
+        events::publish_slashed(
+            &env,
+            caller.clone(),
+            validator.clone(),
+            slash_amount,
+            new_validator_stake,
+            new_total,
+        );
+
+        audit::AuditManager::log_event(
+            &env,
+            caller,
+            "staking.slash",
+            soroban_sdk::String::from_str(&env, &slash_amount.to_string()),
+            "ok",
+        );
+
+        Ok(slash_amount)
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
