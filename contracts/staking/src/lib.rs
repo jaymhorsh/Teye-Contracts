@@ -1342,4 +1342,5 @@ mod test_admin_tiers;
 mod test_multisig;
 
 #[cfg(test)]
+mod test_late_quorum;
 mod test_reward_multiplier;
