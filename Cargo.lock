@@ -2148,6 +2148,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "timelock"
+version = "1.2.2"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "treasury"
 version = "1.2.2"
 dependencies = [
