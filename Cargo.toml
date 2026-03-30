@@ -22,6 +22,7 @@ members = [
     "contracts/state_channel",
     "contracts/metering",
     "contracts/vault",
+    "contracts/timelock",
     "contracts/delegation",
     "contracts/governor",
     "sdk/zk_prover",
