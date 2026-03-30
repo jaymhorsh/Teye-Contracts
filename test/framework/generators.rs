@@ -1,32 +1,10 @@
-//! # Property-Based Test Generators
-//!
-//! Composable `proptest` strategies for generating valid and adversarial inputs
-//! across all Teye contract operations.
-//!
-//! ## Design Decisions
-//!
-//! - Generators produce *semantic* values (amounts, durations, action sequences),
-//!   not raw bytes, so tests exercise real code paths rather than hitting
-//!   deserialization errors.
-//! - Edge-case weights are tuned: ~20% of values are boundary cases (0, 1,
-//!   i128::MAX) to maximize bug-finding per test iteration.
-//! - Action sequence generators model realistic user behaviour patterns to
-//!   achieve higher state-space coverage than uniform random sampling.
+.
 
 extern crate std;
 
 use proptest::prelude::*;
 use std::vec::Vec;
 
-// ── Scalar Generators ────────────────────────────────────────────────────────
-
-/// Strategy for token amounts (i128), biased toward edge cases.
-///
-/// Distribution:
-///   10% → 0
-///   10% → 1
-///   10% → MAX safe amount (10^15, realistic for Stellar 7-decimal tokens)
-///   70% → uniform in [1, 10^15]
 pub fn amount_strategy() -> impl Strategy<Value = i128> {
     prop_oneof![
         1 => Just(0i128),
@@ -45,7 +23,6 @@ pub fn positive_amount_strategy() -> impl Strategy<Value = i128> {
     ]
 }
 
-/// Strategy for amounts that should be rejected (negative or zero).
 pub fn invalid_amount_strategy() -> impl Strategy<Value = i128> {
     prop_oneof![
         5 => Just(0i128),
