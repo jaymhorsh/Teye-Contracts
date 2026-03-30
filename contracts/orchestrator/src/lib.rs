@@ -374,3 +374,6 @@ mod test_gas_benchmarks;
 
 #[cfg(test)]
 mod test_rbac_interactions;
+
+#[cfg(test)]
+mod test_workflow_transitions;
